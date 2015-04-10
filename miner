@@ -1,0 +1,187 @@
+--[[ miner
+An advanced turtle API designed to make mining simple with functions to dig shafts,
+and other mining functions.
+
+Written by apemanzilla
+]]
+
+-- Basic blacklist for vanilla 'junk' blocks
+local oreblacklist = {
+	Cobblestone = {name = "minecraft:cobblestone"},
+	Stone = {name = "minecraft:stone"},
+	Sandstone = {name = "minecraft:sandstone", damage = 0},
+	Grass = {name = "minecraft:grass"},
+	Dirt = {name = "minecraft:dirt"},
+	Gravel = {name = "minecraft:gravel"},
+	Sand = {name = "minecraft:sand"},
+	Bedrock = {name = "minecraft:bedrock"}
+}
+
+function isJunk(blockData)
+	if not (blockData and blockData.name) then
+		return true
+	end
+	if blockData.metadata then blockData.damage = blockData.metadata end
+	for k,v in pairs(oreblacklist) do
+		if v.name == blockData.name then
+			if v.damage then
+				if v.damage == blockData.damage then
+					return true
+				end
+			else
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function canFit(data, amt)
+	amt = amt or 1
+	if not data.name then
+		return false
+	end
+	for i = 1, 16 do
+		local slotData = turtle.getItemDetail(i)
+		if (not slotData) or (slotData.name == data.name and slotData.damage == data.damage) then
+			amt = amt - turtle.getItemSpace(i)
+		end
+	end
+	if amt <= 0 then
+		return true, math.abs(amt)
+	else
+		return false, amt
+	end
+end
+
+function mineSides(oresOnly)
+	if oresOnly == nil then oresOnly = true end
+	for i = 1, 4 do
+		if oresOnly then
+			local block, data = turtle.inspect()
+			if block and not isJunk(data) then
+				if canFit(data, 1) then
+					turtle.dig()
+				else
+					return false, "out of space"
+				end
+			end
+		else
+			if canFit(data, 1) then
+				turtle.dig()
+			else
+				return false, "out of space"
+			end
+		end
+		turtle.turnRight()
+	end
+	return true
+end
+
+function refuel(target)
+	for i = 1, 16 do
+		turtle.select(i)
+		if turtle.refuel(0) then
+			while turtle.getFuelLevel() < target and turtle.getItemCount(i) > 0 do
+				turtle.refuel(1)
+			end
+		end
+		if turtle.getFuelLevel() > target then
+			break
+		end
+	end
+	return turtle.getFuelLevel()
+end
+
+function mineVertShaft(skip, maxDepth, oresOnly, coverHole)
+	local skip = skip or 0
+	if not maxDepth and move and move.getPos().y then
+		maxDepth = move.getPos().y - 1
+	elseif not maxDepth then
+		maxDepth = 64
+	end
+	if oresOnly == nil then
+		oresOnly = true
+	end
+	if coverHole == nil then
+		coverHole = true
+	end
+	local minimumFuel = 2 * maxDepth
+	if turtle.getFuelLevel() < minimumFuel then
+		if not (refuel(minimumFuel) >= minimumFuel) then
+			return false, "need more fuel"
+		end
+	end
+	local function ascend(blocks)
+		for i = 1, blocks do
+			while not turtle.up() do
+				turtle.attackUp()
+				turtle.digUp()
+			end
+		end
+	end
+	local function coverHole()
+		-- Cover hole
+		if coverHole then
+			for i = 1, 16 do
+				if turtle.getItemDetail(i) and isJunk(turtle.getItemDetail(i)) then
+					turtle.select(i)
+					turtle.placeDown()
+					break
+				end
+			end
+		end
+	end
+	local function dropJunk(save)
+		-- Drop junk
+		if save == nil then
+			local saved = not coverHole
+		else
+			saved = not save
+		end
+		if oresOnly then
+			for i = 1, 16 do
+				if turtle.getItemDetail(i) and isJunk(turtle.getItemDetail(i)) then
+					turtle.select(i)
+					if not saved then
+						turtle.dropDown(turtle.getItemCount(i) - 1)
+						saved = true
+					else
+						turtle.dropDown(turtle.getItemCount(i))
+					end
+				end
+			end
+		end
+	end
+	-- Descend and mine
+	local totalDown = 0
+	for i = 1, maxDepth do
+		local success, err = turtle.digDown()
+		if not success and err == "Unbreakable block detected" then
+			break
+		end
+		if not isJunk(turtle.inspectDown()) and canFit(turtle.inspectDown, 1) then
+			ascend(totalDown)
+			dropJunk()
+			coverHole()
+			return false, "out of space", totalDown
+		end
+		while not turtle.down() do
+			turtle.attackDown()
+		end
+		totalDown = totalDown + 1
+		if totalDown > skip then
+			local success, err = mineSides(oresOnly)
+			if not success then
+				ascend(totalDown)
+				dropJunk()
+				coverHole()
+				return false, err, totalDown
+			end
+		end
+	end
+	ascend(totalDown)
+	dropJunk()
+	coverHole()
+	return true
+end
