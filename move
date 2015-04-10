@@ -52,9 +52,11 @@ local function dirToFacing(dir)
 end
 
 function savePos()
-	local f = fs.open(".position","w")
-	f.write(textutils.serialize(pos))
-	f.close()
+	if pos.x and pos.y and pos.z and pos.f then
+		local f = fs.open(".position","w")
+		f.write(textutils.serialize(pos))
+		f.close()
+	end
 end
 
 function updateFacing()
@@ -137,35 +139,45 @@ function setPos(x,y,z,f)
 	pos.f = f
 end
 
-local function loadPos()
+function loadPos(forceFileLoad)
+	if forceFileLoad == nil then forceFileLoad = false end
 	if fs.exists(".position") then
 		local f = fs.open(".position","r")
 		local temppos = textutils.unserialize(f.readAll())
 		f.close()
-		local x, y, z = gps.locate(0.1)
-		if x and y and z then
-			pos.x = x
-			pos.y = y
-			pos.z = z
-		else
-			pos = temppos
-		end
-		if compass then 
-			pos.f = dirToFacing(compass.getFacing())
-		else
-			if temppos.x == pos.x and temppos.y == pos.y and temppos.z == pos.z then
-				pos.f = temppos.f
-			else
-				updateFacing()
+		if not forceFileLoad then
+			local x, y, z = gps.locate(0.1)
+			if x and y and z then
+				pos.x = x
+				pos.y = y
+				pos.z = z
 			end
+			if compass then 
+				pos.f = dirToFacing(compass.getFacing())
+			else
+				if temppos.x == pos.x and temppos.y == pos.y and temppos.z == pos.z then
+					pos.f = temppos.f
+				else
+					updateFacing()
+				end
+			end
+			savePos()
+		else
+			pos.x, pos.y, pos.z, pos.f = temppos.x, temppos.y, temppos.z, temppos.f
 		end
-		savePos()
 	else
 		updatePos()
 	end
 end
 
-loadPos()
+function adjustCoords(tbl, change, f)
+	assert(tbl.x and tbl.y and tbl.z, "missing coordinate(s)")
+	tbl.x = tbl.x + (df[f].dx * change)
+	tbl.z = tbl.z + (df[f].dz * change)
+	return tbl
+end
+
+loadPos(false)
 
 -- Local copy of turtle functions in case they are overridden later
 local turtle = {}
@@ -313,9 +325,9 @@ function canReach(x, y, z)
 	if not z then z = pos.z end
 	local fuelNeeded = math.abs(pos.x - x) + math.abs(pos.y - y) + math.abs(pos.z - z)
 	if turtle.getFuelLevel() < fuelNeeded then
-		return false, "need more fuel", math.abs(turtle.getFuelLevel() - fuelNeeded)
+		return false, fuelNeeded
 	end
-	return true, turtle.getFuelLevel() - fuelNeeded
+	return true, fuelNeeded
 end
 
 function goto(x, y, z, f, validatePos)
@@ -366,6 +378,7 @@ function goto(x, y, z, f, validatePos)
 		end
 		for i = 1, math.abs(start.x - dest.x) do
 			while not forward() do
+				while peripheral.getType("front") == "turtle" do sleep(1) end
 				turtle.dig()
 				turtle.attack()
 			end
@@ -376,6 +389,7 @@ function goto(x, y, z, f, validatePos)
 		end
 		for i = 1, math.abs(start.z - dest.z) do
 			while not forward() do
+				while peripheral.getType("front") == "turtle" do sleep(1) end
 				turtle.dig()
 				turtle.attack()
 			end
@@ -384,6 +398,7 @@ function goto(x, y, z, f, validatePos)
 		if start.y > dest.y then
 			for i = 1, math.abs(start.y - dest.y) do
 				while not down() do
+					while peripheral.getType("bottom") == "turtle" do sleep(1) end
 					turtle.digDown()
 					turtle.attackDown()
 				end
@@ -391,6 +406,7 @@ function goto(x, y, z, f, validatePos)
 		elseif start.y < dest.y then
 			for i = 1, math.abs(start.y - dest.y) do
 				while not up() do
+					while peripheral.getType("top") == "turtle" do sleep(1) end
 					turtle.digUp()
 					turtle.attackUp()
 				end
