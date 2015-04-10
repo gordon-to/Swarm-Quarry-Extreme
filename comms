@@ -1,0 +1,141 @@
+--[[ comms
+Communications API for Swarm Quarry Extreme
+
+Includes advanced features including dynamic GPS (using the move API) and p2p communication (decentralized)
+
+Written by apemanzilla
+]]
+
+-- Channels:
+-- gps (for turtle dynamic gps) default gps.CHANNEL_GPS
+-- beacon (recovery beacon) default 64000
+-- swarm (main communication channel) default 64001
+local channels = {}
+local modem
+--local function distressMessage
+
+-- Find wireless modem
+for k,v in pairs(peripheral.getNames()) do
+	if peripheral.getType(v) == "modem" and peripheral.call(v, "isWireless") then
+		modem = peripheral.wrap(v)
+		break
+	end
+end
+assert(modem, "could not find wireless modem")
+
+-- Load modem channels
+if fs.exists(".swarmchannels") then
+	local f = fs.open(".swarmchannels","r")
+	channels = textutils.unserialize(f.readAll())
+	f.close()
+end
+if not channels.gps then channels.gps = gps.CHANNEL_GPS end
+if not channels.beacon then channels.beacon = 64000 end
+if not channels.swarm then channels.swarm = 64001 end
+
+-- Load position for dynamic GPS if computer
+local pos
+if not (move or turtle) then
+	pos.x, pos.y, pos.z = gps.locate(0.1)
+end
+
+-- Messages:
+-- 'verifyState', swarmState table
+-- 'setShaft', shaftData table
+
+-- Verify state with swarm
+function verifySwarmState(swarmState)
+	modem.transmit(channels.swarm, os.getComputerID(), {message = "verifyState", swarmState = swarmState, repeated= {[os.getComputerID()] = true}})
+	-- Block to allow comms thread to gather responses
+	sleep(1.5)
+end
+
+function claimShaft(shaft, shaftData)
+	modem.transmit(channels.swarm, os.getComputerID(), {message = "setShaft", shaft = shaft, shaftData = shaftData, repeated = {[os.getComputerID()] = true}})
+end
+
+-- Comms loop - intended to run in parallel with other code
+function run(dynamicGps, repeater)
+	if repeater == nil then repeater = true end
+	if dynamicGps == nil then dynamicGps = true end
+	-- Open channels
+	for k,v in pairs(channels) do
+		modem.open(v)
+	end
+	while true do
+		-- Modem event parameters:
+		-- 1st - event name
+		-- 2nd - side
+		-- 3rd - channel received on
+		-- 4th - reply channel
+		-- 5th - message contents
+		-- 6th - distance
+		local event = {os.pullEvent("modem_message")}
+		-- Swarm comms
+		if event[1] == "modem_message" and event[3] == channels.swarm then
+			if event[5].message then
+				if event[5].message == "verifyState" then
+					local receivedState = event[5]
+					local swarmState = swarm.getSwarmState()
+					-- Update remote state
+					for k,v in pairs(swarmState) do
+						if not received[k] then
+							modem.transmit(channels.swarm, os.getComputerID(), {message = "setShaft", shaft = k, shaftData = v, repeated = {[os.getComputerID()] = true}})
+						end
+					end
+				elseif event[5].message == "setShaft" then
+					local data = swarm.getSwarmState()
+					data[event[5].shaft] = event[5].shaftData
+					swarm.setSwarmState(data)
+				end
+			end
+
+			-- Repeat message
+			if event[5].repeated and not event[5].repeated[os.getComputerID()] then
+				event[5].repeated[os.getComputerID()] = true
+				modem.transmit(channels.swarm, event[4], event[5])
+			end
+		end
+
+		-- Distress beacon repeater
+		if event[1] == "modem_message" and event[3] == channels.beacon and repeater then
+			-- Check if we've already repeated this message
+			if not event[5].repeated[os.getComputerID()] then
+				local message = event[5]
+				message.repeated[os.getComputerID()] = true
+				modem.transmit(channels.beacon, event[4], message)
+			end
+		end
+
+		-- Dynamic GPS host
+		-- Will respond to GPS requests with position from move API
+		if event[1] == "modem_message" and event[3] == channels.gps and event[5] == "PING" and dynamicGps then
+			if move then
+				local pos = move.getPos()
+				if pos.x and pos.y and pos.z then
+					-- Position is being tracked, good to go
+					modem.transmit(event[4], channels.gps, {pos.x, pos.y, pos.z})
+				end
+			elseif pos.x and pos.y and pos.z then
+				-- Position saved earlier, good to go
+				modem.transmit(event[4], channels.gps, {pos.x, pos.y, pos.z})
+			end
+		end
+	end
+end
+
+local beaconText
+
+-- Distress beacon loop - intended to be run in parallel with other code
+function beacon()
+	while true do
+		if beaconText then
+			modem.transmit(channels.beacon, os.getComputerID(), {message = beaconText, repeated = {[os.getComputerID()] = true}, position = move.getPos()})
+		end
+		sleep(1)
+	end
+end
+
+function setDistressMessage(message)
+	beaconText = message
+end
