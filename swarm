@@ -1,0 +1,204 @@
+--[[ swarm
+A swarm miner program (turtle version) for using multiple turtles to efficiently mine an area for ore.
+
+Requires the following APIs:
+- move
+- comms
+- miner
+
+Written by apemanzilla
+]]
+
+local version = {
+	major = 1,
+	minor = 0,
+	patch = 0
+}
+version.getVersion = function() return "v"..version.major.."."..version.minor.."."..version.patch end
+
+term.redirect(term.native())
+term.clear()
+term.setCursorPos(1,1)
+print("Swarm Quarry Extreme "..version.getVersion())
+print("Written by apemanzilla")
+print("Initializing")
+
+-- Make sure APIs are ordered properly
+local requiredApis = {
+	"move",
+	"comms",
+	"miner"
+}
+
+-- Load apis
+for i,v in ipairs(requiredApis) do
+	if not _G[v] then
+		if fs.exists(v) then
+			os.loadAPI(v)
+			print("Loaded API: "..v)
+		else
+			error("missing api: "..v)
+		end
+	else
+		print("API already loaded: "..v)
+	end
+end
+
+-- Override turtle functions with move functions
+turtle.forward = move.forward
+turtle.back = move.back
+turtle.up = move.up
+turtle.down = move.down
+turtle.turnRight = move.right
+turtle.turnLeft = move.left
+
+local swarmState = {}
+local state = {}
+local config = {}
+
+function saveSwarmState(data)
+	local f = fs.open(".swarmstate", "w")
+	f.write(textutils.serialize(data))
+	f.close()
+end
+
+function saveState(data)
+	local f = fs.open(".state", "w")
+	f.write(textutils.serialize(data))
+	f.close()
+end
+
+function loadSwarmState()
+	local f = fs.open(".swarmstate","r")
+	local data = f.readAll()
+	f.close()
+	return textutils.unserialize(data)
+end
+
+-- Check for existing state data
+if fs.exists(".swarmstate") then
+	swarmState = loadSwarmState()
+else
+	saveSwarmState(swarmState)
+end
+
+-- Check for individual state data
+if fs.exists(".state") then
+	
+else
+	saveState(state)
+end
+
+-- Global functions
+_G.swarm = {}
+function swarm.getSwarmState()
+	return swarmState
+end
+
+function swarm.setSwarmState(state)
+	swarmState = state
+	saveSwarmState(state)
+end
+
+-- Main code
+-- As a function to run in parallel with comms
+local function main()
+	-- Make sure position is loaded
+	move.loadPos(true)
+	local pos = move.getPos()
+	while not (pos.x and pos.y and pos.z and pos.f) do
+		comms.setDistressMessage("Cannot determine position")
+		move.loadPos(true)
+		pos = move.getPos()
+		sleep(1)
+	end
+	comms.setDistressMessage()
+
+	-- Contact swarm (double check state)
+	print("Contacting swarm")
+	comms.verifySwarmState(swarmState)
+
+	-- Load swarm config
+	if not fs.exists(".swarmcfg") then
+		comms.setDistressMessage("missing config file")
+	else
+		local f = fs.open(".swarmcfg","r")
+		config = textutils.unserialize(f.readAll())
+		f.close()
+	end
+
+	-- Functions
+
+	local function getNewShaft()
+		-- Update swarm state
+		comms.verifySwarmState(swarmState)
+		-- Find open shaft
+		local shaft
+		for x = 1, config.w do
+			for y = 1, config.h do
+				if not swarmState[x.."-"..y] then
+					shaft = {x = x, y = y}
+					break
+				end
+			end
+			if shaft then
+				break
+			end
+		end
+		if not shaft then
+			return false, "all shafts taken"
+		end
+		-- Calculate position
+		local fx = config.start.f + 1
+		if fx > 3 then fx = 0 end
+		local fy = config.start.f
+		local shaftPos = {}
+		shaftPos.y = config.start.y
+		shaftPos.x = move.adjustCoords(config.start, 3 * shaft.x - 1, fx).x
+		shaftPos.z = move.adjustCoords(config.start, 2 * shaft.y - 1, fy).z
+		if shaft.y % 2 == 0 then
+			shaftPos.x = shaftPos.x + 1
+		end
+		return true, shaft.x.."-"..shaft.y, shaftPos
+	end
+
+	-- Load config
+
+	-- Mine
+	local data = {getNewShaft()}
+	if data[1] then
+		comms.claimShaft(data[2], data[3])
+		swarmState[data[2]] = data[3]
+		saveSwarmState(swarmState)
+		move.goto(data[3].x, data[3].y, data[3].z)
+		miner.mineVertShaft(nil, nil, nil, false)
+	else
+
+	end
+end
+
+-- Coroutine loop
+local routines = {main, comms.run, comms.beacon}
+
+-- Wrap routines
+for i,v in pairs(routines) do
+	routines[i] = coroutine.create(function()
+		local ok, err = pcall(v)
+		if not ok then
+			printError(err)
+		end
+	end)
+end
+
+local eventData = {}
+while true do
+	-- Resume coroutines
+	for k,v in pairs(routines) do
+		if coroutine.status(v) == "suspended" then
+			coroutine.resume(v, unpack(eventData))
+		elseif coroutine.status(v) == "dead" then
+			error("A routine has died (" .. k .. ")")
+		end
+	end
+	eventData = {os.pullEvent()}
+end
